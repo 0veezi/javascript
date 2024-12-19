@@ -3,7 +3,43 @@ const readline = require('readline');
 const fs = require('fs');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 
-// Port-Servis eşleştirmeleri
+// Language translations
+const LANG = {
+    tr: {
+        welcome: '=== Port Scanner v1.0 ===',
+        selectLang: 'Dil seçiniz / Select language (tr/en): ',
+        enterIP: 'Hedef IP adresi: ',
+        scanOption: 'Tarama seçeneği:\n1. Tüm portları tara\n2. Port aralığı belirle\nSeçiminiz (1-2): ',
+        startPort: 'Başlangıç portu: ',
+        endPort: 'Bitiş portu: ',
+        scanning: 'Taranıyor...',
+        scanComplete: 'Tarama tamamlandı!',
+        openPorts: 'Açık portlar:',
+        total: 'Toplam taranan port:',
+        foundPorts: 'Açık port sayısı:',
+        duration: 'Tarama süresi:',
+        seconds: 'saniye',
+        error: 'Hata:'
+    },
+    en: {
+        welcome: '=== Port Scanner v1.0 ===',
+        selectLang: 'Select language (tr/en): ',
+        enterIP: 'Target IP address: ',
+        scanOption: 'Scan option:\n1. Scan all ports\n2. Specify port range\nYour choice (1-2): ',
+        startPort: 'Start port: ',
+        endPort: 'End port: ',
+        scanning: 'Scanning...',
+        scanComplete: 'Scan completed!',
+        openPorts: 'Open ports:',
+        total: 'Total ports scanned:',
+        foundPorts: 'Open ports found:',
+        duration: 'Scan duration:',
+        seconds: 'seconds',
+        error: 'Error:'
+    }
+};
+
+// Port services
 const PORT_SERVICES = {
     20: 'FTP Data',
     21: 'FTP Control',
@@ -19,11 +55,17 @@ const PORT_SERVICES = {
     3389: 'RDP'
 };
 
-// Worker thread kodu
+// Progress bar
+function updateProgress(current, total, lang) {
+    const percentage = Math.floor((current / total) * 100);
+    process.stdout.clearLine();
+    process.stdout.cursorTo(0);
+    process.stdout.write(`${LANG[lang].scanning} ${percentage}% (${current}/${total})`);
+}
+
 if (!isMainThread) {
     const { host, port } = workerData;
     const socket = new net.Socket();
-    
     socket.setTimeout(1000);
     
     socket.on('connect', () => {
@@ -41,17 +83,11 @@ if (!isMainThread) {
     });
     
     socket.connect(port, host);
-}
-
-// Ana program
-else {
+} else {
     const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
     });
-
-    console.clear();
-    console.log('=== Port Scanner v1.0 ===\n');
 
     async function question(query) {
         return new Promise(resolve => rl.question(query, resolve));
@@ -62,7 +98,6 @@ else {
             const worker = new Worker(__filename, {
                 workerData: { host, port }
             });
-
             worker.on('message', resolve);
             worker.on('error', () => resolve({ port, status: 'error' }));
         });
@@ -70,25 +105,50 @@ else {
 
     async function main() {
         try {
-            const host = await question('Hedef IP adresi: ');
-            const startPort = parseInt(await question('Başlangıç portu: '));
-            const endPort = parseInt(await question('Bitiş portu: '));
+            console.clear();
+            console.log('=== Port Scanner v1.0 ===\n');
+            
+            const lang = (await question(LANG.tr.selectLang)).toLowerCase();
+            if (!LANG[lang]) process.exit(1);
 
-            console.log('\nTarama başlıyor...\n');
+            const host = await question(LANG[lang].enterIP);
+            const scanOption = await question(LANG[lang].scanOption);
 
-            const logStream = fs.createWriteStream(`scan_${host}_${Date.now()}.log`);
-            const startTime = Date.now();
+            let startPort = 1;
+            let endPort = 65535;
 
-            const promises = [];
-            for (let port = startPort; port <= endPort; port++) {
-                promises.push(scanPort(host, port));
+            if (scanOption === '2') {
+                startPort = parseInt(await question(LANG[lang].startPort));
+                endPort = parseInt(await question(LANG[lang].endPort));
             }
 
-            const results = await Promise.all(promises);
-            const openPorts = results.filter(r => r.status === 'open');
+            console.log('\n');
+            const logStream = fs.createWriteStream(`scan_${host}_${Date.now()}.log`);
+            const startTime = Date.now();
+            let scannedPorts = 0;
+            const openPorts = [];
 
-            console.log('\nTarama tamamlandı!\n');
-            console.log('Açık portlar:');
+            for(let currentPort = startPort; currentPort <= endPort; currentPort += 1000) {
+                const endChunk = Math.min(currentPort + 999, endPort);
+                const promises = [];
+                
+                for(let port = currentPort; port <= endChunk; port++) {
+                    promises.push(scanPort(host, port));
+                }
+
+                const results = await Promise.all(promises);
+                results.forEach(result => {
+                    if(result.status === 'open') {
+                        openPorts.push(result);
+                    }
+                });
+
+                scannedPorts += promises.length;
+                updateProgress(scannedPorts, endPort, lang);
+            }
+
+            console.log(`\n\n${LANG[lang].scanComplete}\n`);
+            console.log(`${LANG[lang].openPorts}`);
             
             openPorts.forEach(result => {
                 const log = `Port ${result.port}: ${result.service || 'Unknown'}`;
@@ -97,14 +157,14 @@ else {
             });
 
             const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-            const summary = `\nToplam taranan port: ${endPort - startPort + 1}\nAçık port sayısı: ${openPorts.length}\nTarama süresi: ${duration} saniye`;
+            const summary = `\n${LANG[lang].total} ${endPort - startPort + 1}\n${LANG[lang].foundPorts} ${openPorts.length}\n${LANG[lang].duration} ${duration} ${LANG[lang].seconds}`;
             
             console.log(summary);
             logStream.write(summary);
             logStream.end();
 
         } catch (error) {
-            console.error('Hata:', error);
+            console.error(`${LANG[lang].error}`, error);
         } finally {
             rl.close();
         }
